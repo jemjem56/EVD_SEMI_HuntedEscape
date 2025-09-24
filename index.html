@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hunted Escape</title>
+  <link href="https://fonts.googleapis.com/css2?family=Creepster&display=swap" rel="stylesheet">
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden; 
+      background: #000; 
+      font-family: Arial, sans-serif; 
+    }
+    canvas {
+      display: none;
+      background: #111;
+      border: 3px solid red;
+      box-shadow: 0 0 20px rgba(255,0,0,0.6);
+      opacity: 0;
+      transition: opacity 2s ease-in;
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1;
+    }
+    #overlay-bg {
+      position: absolute; inset: 0;
+      background: url("img/back.png") center/cover no-repeat;
+      filter: blur(6px) brightness(0.3);
+      z-index: 9;
+    }
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 10; color: white;
+      text-shadow: 2px 2px 10px red;
+    }
+    #overlay h1 { font-size: 3em; margin-bottom: 20px; }
+    button {
+      padding: 12px 26px; font-size: 1.3em;
+      background: #111; color: white;
+      border: 2px solid red; border-radius: 5px;
+      cursor: pointer; margin-top: 12px;
+      transition: background 0.3s; box-shadow: 0 0 10px red;
+    }
+    button:hover { background: red; color: black; }
+    #message {
+      position: absolute; top: 40%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 2em; color: white; display: none;
+      text-shadow: 2px 2px 10px red; text-align: center;
+      z-index: 15; user-select: none; max-width: 80vw;
+    }
+    #buttons-container {
+      position: absolute; top: 55%; left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 15; display: none; gap: 10px;
+    }
+    #hud {
+      position: absolute; top: 15px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 40px;
+      font-size: 1.8em;
+      font-family: "Creepster", cursive, Arial, sans-serif;
+      color: #ff1c1c;
+      text-shadow: 2px 2px 6px black, 0 0 15px red;
+      z-index: 12; display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay-bg"></div>
+  <div id="overlay">
+    <h1>👻 Hunted Escape</h1>
+    <button id="startBtn" disabled>Loading...</button>
+  </div>
+  <canvas id="gameCanvas" width="900" height="600"></canvas>
+  <div id="hud">
+    <span id="levelDisplay">Level 1</span>
+    <span id="keysDisplay">Keys: 0/3</span>
+  </div>
+  <div id="message"></div>
+  <div id="buttons-container"></div>
+
+  <audio id="bgm" loop>
+    <source src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3" type="audio/mpeg" />
+  </audio>
+  <audio id="heartbeat" loop>
+    <source src="https://cdn.pixabay.com/audio/2021/09/30/audio_66e9d44c92.mp3" type="audio/mpeg" />
+  </audio>
+  <audio id="scream">
+    <source src="https://www.myinstants.com/media/sounds/scream.mp3" type="audio/mpeg" />
+  </audio>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const overlay = document.getElementById("overlay");
+    const overlayBg = document.getElementById("overlay-bg");
+    const message = document.getElementById("message");
+    const buttonsContainer = document.getElementById("buttons-container");
+    const startBtn = document.getElementById("startBtn");
+    const bgm = document.getElementById("bgm");
+    const heartbeat = document.getElementById("heartbeat");
+    const scream = document.getElementById("scream");
+    const levelDisplay = document.getElementById("levelDisplay");
+    const keysDisplay = document.getElementById("keysDisplay");
+    const hud = document.getElementById("hud");
+
+    const playerImg = new Image(); playerImg.src = "img/Knight.gif";
+    const ghostImg = new Image(); ghostImg.src = "img/ghost.png";
+    const keyImg = new Image(); keyImg.src = "img/key.png";
+    const doorImg = new Image(); doorImg.src = "img/door.png";
+
+    const keys = {};
+    window.addEventListener("keydown", e => keys[e.code] = true);
+    window.addEventListener("keyup", e => keys[e.code] = false);
+
+    let player, monster, keysToCollect, exitDoor, walls;
+    let gameLoopId, isGameOver = false;
+    let level = 1;
+    const maxLevel = 10;
+
+    // --- Screen Shake ---
+    function screenShake(duration = 500, intensity = 8) {
+      let start = performance.now();
+      function shake() {
+        let now = performance.now();
+        let elapsed = now - start;
+        if (elapsed < duration) {
+          let dx = (Math.random() - 0.5) * intensity;
+          let dy = (Math.random() - 0.5) * intensity;
+          canvas.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+          requestAnimationFrame(shake);
+        } else {
+          canvas.style.transform = "translate(-50%, -50%)";
+        }
+      }
+      shake();
+    }
+
+    // --- Utility: collision ---
+    function collidesWithWall(x,y,size){
+      return walls.some(w=>x < w.x+w.w && x+size > w.x && y < w.y+w.h && y+size > w.y);
+    }
+
+    // --- Safe Spawning ---
+    function findSafeSpawn(size) {
+      let x, y, attempts = 0;
+      do {
+        x = 50 + Math.random() * (canvas.width - 100);
+        y = 50 + Math.random() * (canvas.height - 100);
+        attempts++;
+        if (attempts > 200) break;
+      } while (collidesWithWall(x, y, size));
+      return { x, y };
+    }
+
+    // --- Walls / Keys / Door ---
+   function generateWalls(level) {
+      let baseWalls = [
+      { x: 0, y: 0, w: canvas.width, h: 20 },
+      { x: 0, y: canvas.height - 20, w: canvas.width, h: 20 },
+      { x: 0, y: 0, w: 20, h: canvas.height },
+      { x: canvas.width - 20, y: 0, w: 20, h: canvas.height }
+    ];
+      let extraWalls = [];
+      if (level <= 3) {
+        extraWalls = [
+        { x: 100, y: 100, w: 400, h: 20 },
+        { x: 300, y: 200, w: 20, h: 300 },
+        { x: 200, y: 400, w: 400, h: 20 }
+    ];
+  } else if (level <= 5) {
+    for (let i = 0; i < 5; i++) {
+      extraWalls.push({
+        x: 80 + Math.random() * 700,
+        y: 80 + Math.random() * 400,
+        w: 100 + Math.random() * 200,
+        h: 20
+      });
+    }
+  } else {
+    for (let i = 0; i < 8; i++) {
+      extraWalls.push({
+        x: 60 + Math.random() * 700,
+        y: 60 + Math.random() * 400,
+        w: 80 + Math.random() * 220,
+        h: 20
+      });
+    }
+  }
+  return baseWalls.concat(extraWalls);
+}
+    function placeDoor() {
+      let side = ["top", "bottom", "left", "right"][Math.floor(Math.random() * 4)];
+      let size = 60;
+
+      if (side === "top")
+        return { x: Math.random() * (canvas.width - size), y: 20, size, unlocked: false };
+
+      if (side === "bottom")
+        return { x: Math.random() * (canvas.width - size), y: canvas.height - size - 20, size, unlocked: false };
+
+      if (side === "left")
+        return { x: 20, y: Math.random() * (canvas.height - size), size, unlocked: false };
+
+    return { 
+      x: canvas.width - size - 20, y: Math.random() * (canvas.height - size), size, unlocked: false };
+  }
+
+    function generateKeys(level) {
+      let keyCount = (level === 10)?5:3;
+      let placements = [];
+      while (placements.length < keyCount) {
+        let x = 100 + Math.random() * 700;
+        let y = 100 + Math.random() * 400;
+        if (!walls.some(w => x > w.x && x < w.x + w.w && y > w.y && y < w.y + w.h)) {
+          placements.push({x,y});
+        }
+      }
+      return placements.map(p => ({...p, collected:false}));
+    }
+
+    // --- Lighting / Flashlight mechanic ---
+    function getLightRadius() {
+      if (level <= 3) return 260;
+      if (level <= 6) return 190;
+      if (level <= 9) return 140;
+      return 100; // final hardest
+    }
+    function drawLighting() {
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      let gradient = ctx.createRadialGradient(
+        player.x + player.size / 2,
+        player.y + player.size / 2,
+        30,
+        player.x + player.size / 2,
+        player.y + player.size / 2,
+        getLightRadius()
+      );
+      gradient.addColorStop(0, "rgba(0,0,0,0)");
+      gradient.addColorStop(1, "rgba(0,0,0,0.65)");
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    // --- Drawing ---
+    function drawPlayer() {
+      ctx.drawImage(playerImg, player.x, player.y, player.size, player.size); 
+  }
+
+function drawWalls() {
+  ctx.fillStyle = "#333";
+  walls.forEach(w => ctx.fillRect(w.x, w.y, w.w, w.h));
+}
+
+function drawKeys() {
+  const visionRadius = 120;
+  keysToCollect.forEach(k => {
+    if (!k.collected) {
+      let dx = player.x - k.x,
+          dy = player.y - k.y;
+      if (Math.sqrt(dx * dx + dy * dy) < visionRadius) {
+        ctx.drawImage(keyImg, k.x - 12, k.y - 12, 24, 24);
+      }
+    }
+  });
+}
+
+    function drawDoor(){
+      ctx.globalAlpha = exitDoor.unlocked?1:0.4;
+      ctx.drawImage(doorImg, exitDoor.x, exitDoor.y, exitDoor.size, exitDoor.size);
+      ctx.globalAlpha = 1;
+    }
+    function drawMonster(){ 
+      ctx.drawImage(ghostImg, monster.x, monster.y, monster.size, monster.size); 
+    }
+    // --- Update logic ---
+    function updatePlayer(){
+      if(isGameOver)return;
+      let newX = player.x, newY = player.y;
+      if(keys["ArrowUp"] || keys["KeyW"]) newY -= player.speed;
+      if(keys["ArrowDown"] || keys["KeyS"]) newY += player.speed;
+      if(keys["ArrowLeft"] || keys["KeyA"]) newX -= player.speed;
+      if(keys["ArrowRight"] || keys["KeyD"]) newX += player.speed;
+      if(!collidesWithWall(newX, player.y, player.size)) player.x = newX;
+      if(!collidesWithWall(player.x, newY, player.size)) player.y = newY;
+    }
+
+    function updateMonster(){
+      // Ghost can walk through walls (no collision check)
+      let dx = player.x - monster.x;
+      let dy = player.y - monster.y;
+      let dist = Math.sqrt(dx*dx + dy*dy);
+      if(dist > 1){
+        monster.x += (dx / dist) * monster.speed;
+        monster.y += (dy / dist) * monster.speed;
+      }
+    }
+
+    function checkKeyCollection() {
+      keysToCollect.forEach(k => {
+      if (
+        !k.collected &&
+        player.x < k.x + 20 &&
+        player.x + player.size > k.x - 20 &&
+        player.y < k.y + 20 &&
+        player.y + player.size > k.y - 20
+      ) {
+        k.collected = true;
+        let collectedCount = keysToCollect.filter(x => x.collected).length;
+        keysDisplay.textContent = `Keys: ${collectedCount}/${keysToCollect.length}`;
+      }
+    });
+  }
+
+   function allKeysCollected() {
+    return keysToCollect.every(k => k.collected);
+    }
+function checkDoor() {
+  if (
+    exitDoor.unlocked &&
+    player.x + player.size > exitDoor.x &&
+    player.x < exitDoor.x + exitDoor.size &&
+    player.y + player.size > exitDoor.y &&
+    player.y < exitDoor.y + exitDoor.size
+  ) {
+    gameOver(true);
+  }
+}
+    function checkMonsterCatch(){
+      if(Math.abs(player.x - monster.x) < 35 && Math.abs(player.y - monster.y) < 35 ) 
+      gameOver(false);
+    }
+
+    // --- Reset / Loop ---
+  function resetGame() {
+    let playerSpeed = (level === 10) ? 5 : (level >= 7 ? 5 : 4);
+    let monsterSpeed = (level === 10) ? 4.5 : (level >= 7 ? 3 : 2);
+
+    walls = generateWalls(level);
+
+    let spawn = findSafeSpawn(40);
+    player = { x: spawn.x, y: spawn.y, size: 40, speed: playerSpeed };
+
+    spawn = findSafeSpawn(50);
+    monster = { x: spawn.x, y: spawn.y, size: 50, speed: monsterSpeed };
+
+    keysToCollect = generateKeys(level);
+    exitDoor = placeDoor();
+
+    message.style.display = "none";
+    buttonsContainer.style.display = "none";
+    buttonsContainer.innerHTML = "";
+
+    isGameOver = false;
+    canvas.style.display = "block";
+    hud.style.display = "flex";
+
+    setTimeout(() => canvas.style.opacity = 1, 50);
+    bgm.volume = 0.15;
+    bgm.play();
+    heartbeat.volume = 0;
+    heartbeat.play();
+    levelDisplay.textContent = `Level ${level}`;
+    keysDisplay.textContent = `Keys: 0/${keysToCollect.length}`;
+    gameLoop();
+  }
+
+  function gameLoop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    drawWalls();
+    updatePlayer();
+    drawPlayer();
+    checkKeyCollection();
+    drawKeys();
+
+    if (allKeysCollected()) exitDoor.unlocked = true;
+
+    drawDoor();
+    updateMonster();
+    drawMonster();
+    checkMonsterCatch();
+    checkDoor();
+    drawLighting();
+
+    if (!isGameOver) gameLoopId = requestAnimationFrame(gameLoop);
+  }
+    // --- Game Over ---
+    function gameOver(survived){
+      isGameOver = true; cancelAnimationFrame(gameLoopId); 
+      buttonsContainer.innerHTML = "";
+      if(survived){
+        if(level === maxLevel){
+          message.innerHTML = `🏆 Congratulations! You survived all ${maxLevel} levels! <br> You escaped the haunted maze!`;
+          let restartBtn = document.createElement("button"); 
+          restartBtn.textContent="Play Again";
+          restartBtn.onclick=() => { 
+            level = 1; 
+            resetGame(); 
+          }; 
+          buttonsContainer.appendChild(restartBtn);
+        } else {
+          message.innerHTML =`🎉 You survived Level ${level}!`;
+          let restartBtn = document.createElement("button"); 
+          restartBtn.textContent = "Restart Level"; 
+          restartBtn.onclick = () => resetGame(); 
+          buttonsContainer.appendChild(restartBtn);
+
+          let nextBtn = document.createElement("button"); 
+          nextBtn.textContent = "Next Level"; 
+          nextBtn.onclick = () => { 
+            level++;
+            resetGame();
+          }; 
+          buttonsContainer.appendChild(nextBtn);
+        }
+      } else {
+        message.innerHTML="😱 You were caught!";
+        scream.play(); screenShake();
+        let tryAgainBtn = document.createElement("button"); 
+        tryAgainBtn.textContent = "Try Again"; 
+        tryAgainBtn.onclick=() => resetGame(); 
+        buttonsContainer.appendChild(tryAgainBtn);
+      }
+      message.style.display = "block"; 
+      buttonsContainer.style.display = "flex"; 
+      bgm.pause(); 
+      heartbeat.pause(); 
+    }
+    // --- Start ---
+    startBtn.addEventListener("click",()=> { 
+      overlay.style.display = "none"; 
+      overlayBg.style.display="none"; 
+    resetGame(); 
+  });
+    let imagesLoaded = 0,totalImages = 4;
+    [playerImg, ghostImg, keyImg, doorImg].forEach(img => {
+      img.onload=()=> { 
+        if(++imagesLoaded === totalImages){ 
+          startBtn.disabled = false; 
+          startBtn.textContent = "Start Game"; 
+        } 
+      }; 
+    });
+  </script>
+</body>
+</html>
